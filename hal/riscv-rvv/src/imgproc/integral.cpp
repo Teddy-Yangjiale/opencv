@@ -129,6 +129,16 @@ int integral(int depth, int sdepth, int sqdepth,
         return CV_HAL_ERROR_NOT_IMPLEMENTED;
     }
 
+    // The vectorized prefix sum accumulates in a different order than the
+    // scalar baseline. With a CV_32F accumulator the rounding differs once the
+    // running sum leaves the exactly-representable integer range (2^24), so
+    // results are not bit-exact with the generic implementation and fail
+    // regression checks. Keep those combinations on the generic path.
+    // Details: https://github.com/opencv/opencv/issues/27407
+    if (sqsum_data && (sdepth == CV_32F || sqdepth == CV_32F)) {
+        return CV_HAL_ERROR_NOT_IMPLEMENTED;
+    }
+
     // Skip images that are too small
     if (!(width >> 8 || height >> 8)) {
         return CV_HAL_ERROR_NOT_IMPLEMENTED;

@@ -236,10 +236,8 @@ int integral(int depth, int sdepth, int sqdepth,
              uchar* tilted_data, [[maybe_unused]] size_t tilted_step,
              int width, int height, int cn);
 
-// Diasbled due to accuracy issue.
-// Details see https://github.com/opencv/opencv/issues/27407.
-//#undef cv_hal_integral
-//#define cv_hal_integral cv::rvv_hal::imgproc::integral
+#undef cv_hal_integral
+#define cv_hal_integral cv::rvv_hal::imgproc::integral
 
 /* ############ scharr ############ */
 int scharr(const uint8_t *src_data, size_t src_step, uint8_t *dst_data, size_t dst_step, int width, int height, int src_depth, int dst_depth, int cn, int margin_left, int margin_top, int margin_right, int margin_bottom, int dx, int dy, double scale, double delta, int border_type);
