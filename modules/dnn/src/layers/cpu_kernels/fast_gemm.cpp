@@ -365,6 +365,147 @@ static inline void fast_gemm_thin_strip(int M, int K, float alpha,
 #endif
 }
 
+#if CV_SIMD_SCALABLE
+// Small-M specializations for scalable-SIMD targets (e.g. RVV), aimed at the
+// GEMV-like shapes of transformer token generation (M = 1..4). The generic
+// strip kernel above cannot keep per-row accumulators in an array of sizeless
+// vector types and round-trips each one through a scratch buffer on every k
+// step; here every accumulator is a named variable that stays in a vector
+// register for the whole K loop. These shapes are bandwidth-bound, so each
+// kernel reads at most two packed-B streams at a time: on in-order cores with
+// simple stream prefetchers more concurrent streams degrade effective
+// bandwidth (M=1 with 4 and even 2 streams measured slower than 1 on
+// SpacemiT K1, while M=2 with 2 streams is a clear win). Each output column
+// is still accumulated in increasing-k order, so results stay bit-exact with
+// the generic path.
+static inline void fast_gemm_thin_store(float* c, v_float32 acc, float alpha, float beta) {
+    if (beta == 0.f)
+        vx_store(c, v_mul(acc, vx_setall_f32(alpha)));
+    else if (beta == 1.f)
+        vx_store(c, v_fma(acc, vx_setall_f32(alpha), vx_load(c)));
+    else
+        vx_store(c, v_fma(acc, vx_setall_f32(alpha), v_mul(vx_load(c), vx_setall_f32(beta))));
+}
+
+static void fast_gemm_thin_m1x1(int K, float alpha, const float* A, int lda1,
+                                const float* b0, int NR, float beta, float* c) {
+    v_float32 c0 = vx_setzero_f32();
+    for (int k = 0; k < K; k++)
+        c0 = v_fma(vx_load(b0 + k * NR), vx_setall_f32(A[k * lda1]), c0);
+    fast_gemm_thin_store(c, c0, alpha, beta);
+}
+
+static void fast_gemm_thin_m2x2(int K, float alpha, const float* A, int lda0, int lda1,
+                                const float* b0, const float* b1,
+                                int NR, float beta, float* c, int ldc) {
+    v_float32 c00 = vx_setzero_f32(), c01 = vx_setzero_f32();
+    v_float32 c10 = vx_setzero_f32(), c11 = vx_setzero_f32();
+    const float* A1 = A + lda0;
+    for (int k = 0; k < K; k++) {
+        v_float32 bv0 = vx_load(b0 + k * NR), bv1 = vx_load(b1 + k * NR);
+        v_float32 a0 = vx_setall_f32(A[k * lda1]);
+        v_float32 a1 = vx_setall_f32(A1[k * lda1]);
+        c00 = v_fma(bv0, a0, c00);
+        c01 = v_fma(bv1, a0, c01);
+        c10 = v_fma(bv0, a1, c10);
+        c11 = v_fma(bv1, a1, c11);
+    }
+    fast_gemm_thin_store(c,            c00, alpha, beta);
+    fast_gemm_thin_store(c + NR,       c01, alpha, beta);
+    fast_gemm_thin_store(c + ldc,      c10, alpha, beta);
+    fast_gemm_thin_store(c + ldc + NR, c11, alpha, beta);
+}
+
+static void fast_gemm_thin_m2x1(int K, float alpha, const float* A, int lda0, int lda1,
+                                const float* b0, int NR, float beta, float* c, int ldc) {
+    v_float32 c0 = vx_setzero_f32(), c1 = vx_setzero_f32();
+    const float* A1 = A + lda0;
+    for (int k = 0; k < K; k++) {
+        v_float32 bv = vx_load(b0 + k * NR);
+        c0 = v_fma(bv, vx_setall_f32(A[k * lda1]), c0);
+        c1 = v_fma(bv, vx_setall_f32(A1[k * lda1]), c1);
+    }
+    fast_gemm_thin_store(c,       c0, alpha, beta);
+    fast_gemm_thin_store(c + ldc, c1, alpha, beta);
+}
+
+static void fast_gemm_thin_m3x1(int K, float alpha, const float* A, int lda0, int lda1,
+                                const float* b0, int NR, float beta, float* c, int ldc) {
+    v_float32 c0 = vx_setzero_f32(), c1 = vx_setzero_f32(), c2 = vx_setzero_f32();
+    const float* A1 = A + lda0;
+    const float* A2 = A + 2 * lda0;
+    for (int k = 0; k < K; k++) {
+        v_float32 bv = vx_load(b0 + k * NR);
+        c0 = v_fma(bv, vx_setall_f32(A[k * lda1]), c0);
+        c1 = v_fma(bv, vx_setall_f32(A1[k * lda1]), c1);
+        c2 = v_fma(bv, vx_setall_f32(A2[k * lda1]), c2);
+    }
+    fast_gemm_thin_store(c,           c0, alpha, beta);
+    fast_gemm_thin_store(c + ldc,     c1, alpha, beta);
+    fast_gemm_thin_store(c + 2 * ldc, c2, alpha, beta);
+}
+
+static void fast_gemm_thin_m4x1(int K, float alpha, const float* A, int lda0, int lda1,
+                                const float* b0, int NR, float beta, float* c, int ldc) {
+    v_float32 c0 = vx_setzero_f32(), c1 = vx_setzero_f32();
+    v_float32 c2 = vx_setzero_f32(), c3 = vx_setzero_f32();
+    const float* A1 = A + lda0;
+    const float* A2 = A + 2 * lda0;
+    const float* A3 = A + 3 * lda0;
+    for (int k = 0; k < K; k++) {
+        v_float32 bv = vx_load(b0 + k * NR);
+        c0 = v_fma(bv, vx_setall_f32(A[k * lda1]), c0);
+        c1 = v_fma(bv, vx_setall_f32(A1[k * lda1]), c1);
+        c2 = v_fma(bv, vx_setall_f32(A2[k * lda1]), c2);
+        c3 = v_fma(bv, vx_setall_f32(A3[k * lda1]), c3);
+    }
+    fast_gemm_thin_store(c,           c0, alpha, beta);
+    fast_gemm_thin_store(c + ldc,     c1, alpha, beta);
+    fast_gemm_thin_store(c + 2 * ldc, c2, alpha, beta);
+    fast_gemm_thin_store(c + 3 * ldc, c3, alpha, beta);
+}
+#endif // CV_SIMD_SCALABLE
+
+// Process full B strips [s_begin, s_end); dispatches to the small-M
+// specializations where available, otherwise runs the generic strip kernel.
+static void fast_gemm_thin_strips(int M, int K, float alpha,
+                                  const float* A, int lda0, int lda1,
+                                  const float* packed_B, int NR, float beta,
+                                  float* C, int ldc, int s_begin, int s_end) {
+    int s = s_begin;
+#if CV_SIMD_SCALABLE
+    const size_t strip_sz = (size_t)NR * K;
+    if (M == 1) {
+        for (; s < s_end; s++)
+            fast_gemm_thin_m1x1(K, alpha, A, lda1, packed_B + s * strip_sz, NR, beta, C + s * NR);
+        return;
+    }
+    if (M == 2) {
+        for (; s + 2 <= s_end; s += 2)
+            fast_gemm_thin_m2x2(K, alpha, A, lda0, lda1,
+                                packed_B + s * strip_sz, packed_B + (s + 1) * strip_sz,
+                                NR, beta, C + s * NR, ldc);
+        for (; s < s_end; s++)
+            fast_gemm_thin_m2x1(K, alpha, A, lda0, lda1, packed_B + s * strip_sz, NR, beta, C + s * NR, ldc);
+        return;
+    }
+    if (M == 3) {
+        for (; s < s_end; s++)
+            fast_gemm_thin_m3x1(K, alpha, A, lda0, lda1, packed_B + s * strip_sz, NR, beta, C + s * NR, ldc);
+        return;
+    }
+    if (M == 4) {
+        for (; s < s_end; s++)
+            fast_gemm_thin_m4x1(K, alpha, A, lda0, lda1, packed_B + s * strip_sz, NR, beta, C + s * NR, ldc);
+        return;
+    }
+#endif // CV_SIMD_SCALABLE
+    for (; s < s_end; s++) {
+        const float* b_strip = packed_B + (size_t)s * NR * K;
+        fast_gemm_thin_strip(M, K, alpha, A, lda0, lda1, b_strip, beta, C + s * NR, ldc);
+    }
+}
+
 bool fastGemmThinEligible(int M, int N, int K) {
     if (M <= 0 || N <= 0 || K <= 0) return false;
     if (M > FAST_GEMM_THIN_MAX_M) return false;
@@ -404,11 +545,7 @@ void fastGemmThin(int M, int N, int K, float alpha,
     const int n_tail = N - n_full_strips * NR;
 
     auto fn = [&](const Range& r) {
-        for (int s = r.start; s < r.end; s++) {
-            const float* b_strip = packed_B + (size_t)s * NR * K;
-            float* c_strip = C + s * NR;
-            fast_gemm_thin_strip(M, K, alpha, A, lda0, lda1, b_strip, beta, c_strip, ldc);
-        }
+        fast_gemm_thin_strips(M, K, alpha, A, lda0, lda1, packed_B, NR, beta, C, ldc, r.start, r.end);
     };
     if (multi_thread && n_full_strips > 1) {
         parallel_for_(Range(0, n_full_strips), fn, (double)n_full_strips * M * K * NR * (1.0 / 1024.0));
