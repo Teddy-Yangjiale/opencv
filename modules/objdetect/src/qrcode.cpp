@@ -2895,6 +2895,12 @@ bool QRDecode::decodingProcess()
         case QRCodeEncoder::EncodeMode::MODE_STRUCTURED_APPEND:
             result_info.assign((const char*)payload, payload_len);
             return true;
+        case static_cast<QRCodeEncoder::EncodeMode>(13)/*MODE_HANZI, GB/T 18284-2000*/:
+            // The payload is raw GB2312 bytes (no ECI assignment exists for
+            // GB2312), return as-is just like MODE_KANJI does for Shift_JIS.
+            // See issue #30110.
+            result_info.assign((const char*)payload, payload_len);
+            return true;
         default:
             CV_LOG_WARNING(NULL, "QR: unsupported QR data type");
             return false;

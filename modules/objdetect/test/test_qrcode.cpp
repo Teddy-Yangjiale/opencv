@@ -763,4 +763,102 @@ TEST(Objdetect_QRCode_detect, detect_regression_27783)
     }
 }
 
+// See https://github.com/opencv/opencv/issues/30110
+TEST(Objdetect_QRCode_decode, decode_regression_30110_hanzi_mode)
+{
+    // Version 1-L QR code with a Hanzi mode (GB/T 18284-2000) segment carrying
+    // a 10-character Chinese name encoded in GB2312. The decoder used to throw
+    // cv::Error(StsNotImplemented, "mode 13") instead of decoding the payload.
+    static const char* modules[21] = {
+        "111111100011101111111",
+        "100000100011101000001",
+        "101110101000101011101",
+        "101110100001001011101",
+        "101110100001001011101",
+        "100000100100101000001",
+        "111111101010101111111",
+        "000000001101100000000",
+        "111011111011101000100",
+        "111010011001011011011",
+        "101100100000110110010",
+        "001001001001100101010",
+        "101100100001001111011",
+        "000000001011011010011",
+        "111111101010100100100",
+        "100000101010010100110",
+        "101110101000010001001",
+        "101110100001111111000",
+        "101110101111110101101",
+        "100000101000001001100",
+        "111111101010100111010"
+    };
+    Mat qr(21, 21, CV_8UC1);
+    for (int i = 0; i < 21; i++)
+        for (int j = 0; j < 21; j++)
+            qr.at<uchar>(i, j) = modules[i][j] == '1' ? 0 : 255;  // '1' is a dark module
+
+    Mat src;
+    cv::resize(qr, src, qr.size() * 10, 0, 0, INTER_NEAREST);
+    cv::copyMakeBorder(src, src, 40, 40, 40, 40, BORDER_CONSTANT, Scalar(255));
+
+    QRCodeDetector qrcode;
+    std::vector<std::string> decoded_info;
+    std::vector<Point> corners;
+    bool ok = false;
+    ASSERT_NO_THROW(ok = qrcode.detectAndDecodeMulti(src, decoded_info, corners));
+    EXPECT_TRUE(ok);
+    ASSERT_EQ(decoded_info.size(), 1u);
+    // the raw GB2312 payload bytes (a 10-character Chinese name)
+    EXPECT_EQ(decoded_info[0], std::string("\xC0\xA5\xC9\xBD\xCA\xD0\xBD\xF5\xCF\xAA\xBD\xF0\xD2\xD5\xD3\xA1\xCB\xA2\xB3\xA7"));
+}
+
+// See https://github.com/opencv/opencv/issues/30110
+TEST(Objdetect_QRCode_decode, decode_regression_30110_unsupported_mode)
+{
+    // Version 1-L QR code whose payload starts with an FNC1 in first position
+    // mode indicator (0b0101) followed by a byte segment "AB". The decoder does
+    // not implement this mode and must report "no decode" instead of throwing
+    // cv::Error(StsNotImplemented, "mode 5").
+    static const char* modules[21] = {
+        "111111100101101111111",
+        "100000100111001000001",
+        "101110101101101011101",
+        "101110100101001011101",
+        "101110100010101011101",
+        "100000100000101000001",
+        "111111101010101111111",
+        "000000001101100000000",
+        "111011111111001000100",
+        "011001001010001000000",
+        "001100110000100010101",
+        "001000001000001001010",
+        "011010110100101010011",
+        "000000001111010101011",
+        "111111101101011100101",
+        "100000101001110111010",
+        "101110101001011100101",
+        "101110100100001000110",
+        "101110101100100010011",
+        "100000101010001000100",
+        "111111101000101010111"
+    };
+    Mat qr(21, 21, CV_8UC1);
+    for (int i = 0; i < 21; i++)
+        for (int j = 0; j < 21; j++)
+            qr.at<uchar>(i, j) = modules[i][j] == '1' ? 0 : 255;  // '1' is a dark module
+
+    Mat src;
+    cv::resize(qr, src, qr.size() * 10, 0, 0, INTER_NEAREST);
+    cv::copyMakeBorder(src, src, 40, 40, 40, 40, BORDER_CONSTANT, Scalar(255));
+
+    QRCodeDetector qrcode;
+    std::vector<std::string> decoded_info;
+    std::vector<Point> corners;
+    ASSERT_NO_THROW(qrcode.detectAndDecodeMulti(src, decoded_info, corners));
+    // the code is detected, but nothing must be decoded and no exception thrown
+    EXPECT_FALSE(corners.empty());
+    for (size_t i = 0; i < decoded_info.size(); i++)
+        EXPECT_TRUE(decoded_info[i].empty()) << "unsupported mode must not produce output";
+}
+
 }} // namespace
