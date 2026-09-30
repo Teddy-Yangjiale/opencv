@@ -798,7 +798,13 @@ bool pyopencv_to(PyObject* obj, String &value, const ArgInfo& info)
 template<>
 PyObject* pyopencv_from(const String& value)
 {
-    return PyString_FromString(value.empty() ? "" : value.c_str());
+    // The string is not guaranteed to be valid UTF-8: some decoders (e.g.
+    // QRCodeDetector) return raw payloads in legacy encodings (GB2312,
+    // Shift_JIS, ...). Decode with surrogateescape so the caller can recover
+    // the original bytes via str.encode('utf-8', 'surrogateescape')
+    // instead of getting a UnicodeDecodeError, see issue #30110
+    return PyUnicode_DecodeUTF8(value.empty() ? "" : value.c_str(),
+                                (Py_ssize_t)value.size(), "surrogateescape");
 }
 
 #if CV_VERSION_MAJOR == 3

@@ -84,3 +84,22 @@ class qrcode_detector_test(NewOpenCVTests):
         self.assertEqual(data[0], inp_bytes)
         self.assertEqual(detector.getEncoding(0), cv.QRCodeEncoder_ECI_SHIFT_JIS)
         self.assertEqual(data[0].decode("shift-jis"), inp)
+
+    def test_decode_non_utf8_payload(self):
+        # regression for #30110: the str-returning API must not raise
+        # UnicodeDecodeError on payloads that are not valid UTF-8 (here the
+        # raw Shift_JIS bytes of a Kanji-mode QR code); the original bytes must
+        # stay recoverable through surrogateescape
+        inp = "こんにちは世界"
+        inp_bytes = inp.encode("shift-jis")
+
+        params = cv.QRCodeEncoder_Params()
+        params.mode = cv.QRCodeEncoder_MODE_KANJI
+        encoder = cv.QRCodeEncoder_create(params)
+        qrcode = encoder.encode(inp_bytes)
+        qrcode = cv.resize(qrcode, (0, 0), fx=2, fy=2, interpolation=cv.INTER_NEAREST)
+
+        detector = cv.QRCodeDetector()
+        decoded_data, _, _ = detector.detectAndDecode(qrcode)
+        self.assertTrue(isinstance(decoded_data, str))
+        self.assertEqual(decoded_data.encode("utf-8", "surrogateescape"), inp_bytes)
