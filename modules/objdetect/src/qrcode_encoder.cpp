@@ -1365,6 +1365,7 @@ private:
     void decodeByte(String& result);
     bool decodeECI(String& result);
     void decodeKanji(String& result);
+    bool decodeHanzi(String& result);
     void decodeStructuredAppend(String& result);
 };
 
@@ -1747,12 +1748,13 @@ bool QRCodeDecoderImpl::decodeSymbols(String& result) {
     result = "";
     while (!bitstream.empty()) {
         // Determine mode
-        auto currMode = static_cast<QRCodeEncoder::EncodeMode>(bitstream.next(4));
+        int currModeBits = bitstream.next(4);
+        auto currMode = static_cast<QRCodeEncoder::EncodeMode>(currModeBits);
         if (this->mode == 0) {
             mode = currMode;
         }
 
-        if (currMode == 0 || bitstream.empty())
+        if (currModeBits == 0 || bitstream.empty())
             return true;
         if (currMode == QRCodeEncoder::EncodeMode::MODE_NUMERIC)
             decodeNumeric(result);
@@ -1773,8 +1775,16 @@ bool QRCodeDecoderImpl::decodeSymbols(String& result) {
             total_num = static_cast<uint8_t>(1 + bitstream.next(4));
             parity = static_cast<uint8_t>(bitstream.next(8));
         }
-        else
-            CV_Error(Error::StsNotImplemented, format("mode %d", currMode));
+        else if (currModeBits == 13) {  // 0b1101: Hanzi mode, GB/T 18284-2000
+            if (!decodeHanzi(result))
+                return false;
+        }
+        else {
+            // Unsupported or invalid mode (e.g. FNC1 in first/second position,
+            // 0b0101/0b1001): fail the decode gracefully instead of throwing
+            // a fatal error at the caller, see issue #30110
+            return false;
+        }
     }
     return true;
 }
@@ -1856,6 +1866,28 @@ void QRCodeDecoderImpl::decodeKanji(String& result) {
         result += (symbol >> 8) & 0xff;
         result += symbol & 0xff;
     }
+}
+
+bool QRCodeDecoderImpl::decodeHanzi(String& result) {
+    // Hanzi mode, GB/T 18284-2000: a 4-bit character subset indicator follows
+    // the mode indicator (1 - GB2312), then the character count indicator
+    // (same widths as for Kanji), then 13 bits per 2-byte GB2312 character
+    int subset = bitstream.next(4);
+    if (subset != 1)
+        return false;
+    int num = bitstream.next(version <= 9 ? 8 : (version <= 26 ? 10 : 12));
+    for (int i = 0; i < num; ++i) {
+        int data = bitstream.next(13);
+        int symbol = ((data / 0x60) << 8) | (data % 0x60);
+        if (symbol < 0xA00) {
+            symbol += 0xA1A1;  // GB2312 symbol area, 0xA1A1..0xAAFE
+        } else {
+            symbol += 0xA6A1;  // GB2312 hanzi, 0xB0A1..0xFAFE
+        }
+        result += (symbol >> 8) & 0xff;
+        result += symbol & 0xff;
+    }
+    return true;
 }
 
 }
